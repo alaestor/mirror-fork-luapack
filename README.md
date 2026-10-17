@@ -114,14 +114,22 @@ cargo install --path . --locked --features dynamic,lazy
 
 ## Limitations
 
-The recovered 0.1.1 source returns before writing the output file when
-`--lz4` is set. Avoid that option until it is fixed. No decompressor is included.
+`--lz4` writes a size-prefixed LZ4 block. No decompressor is included. Prefix
+and suffix files remain verbatim outside that block, so they can provide a
+decompressor wrapper.
 
-Dynamic discovery requires a Git repository. A Lua file whose first line
-starts with `-- ignore` is excluded from bundling.
+Dynamic discovery requires a Git repository and scans from its root once.
+It skips `.git`, symlinks, and the selected output file. A Lua file whose first
+line starts with `-- ignore` is excluded from bundling.
 
-This recovery preserves upstream behavior. It does not establish that
-minification preserves semantics for every Lua program.
+Without `lazy`, bundled modules execute on every require. With `lazy`, each
+module's first successful return value is cached, including functions, nil,
+and false. Circular bundled imports raise an error with `lazy` enabled.
+
+Static import rewriting supports unescaped string arguments to `require`.
+Escaped paths and locally shadowed `require` bindings remain limitations.
+Regression coverage does not establish semantic equivalence for every Lua
+program or extension dialect.
 
 ---
 
@@ -136,8 +144,9 @@ cargo test --locked --all-features --no-fail-fast
 
 The CLI suite requires `lua` on `PATH`, supplied by the development shell.
 It checks errors and file handling, executes original and generated Lua to
-compare behavior, and exercises the optional Cargo features. Regression tests
-currently fail on recovered upstream bugs, including the LZ4 limitation above.
+compare behavior, and exercises the optional Cargo features. Run all eight
+combinations of `lz4`, `dynamic`, and `lazy` when changing bundling behavior;
+an all-features run does not cover the non-dynamic module ID implementation.
 
 ---
 

@@ -16,6 +16,8 @@ The crate's `.cargo_vcs_info.json` records commit
 `6ed5a314cf2cd6926c7db89d626ab368adff0d06` and `dirty: true`. That commit
 identifier does not fully describe the published source.
 
-The extracted source, Cargo manifests, lockfile, and license are unchanged.
-The GitHub workflow is preserved under `_.github/` to disable execution.
+The initial recovery commit preserves the extracted source, Cargo manifests,
+lockfile, license, registry metadata, and disabled GitHub workflow. Subsequent
+cleanup removes the registry metadata and workflow and restores the original
+Cargo manifest.
 The original README is preserved as [README.upstream.md](README.upstream.md).

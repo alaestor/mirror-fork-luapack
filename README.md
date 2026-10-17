@@ -29,8 +29,6 @@ used by our Nix package. Git history was not recovered. See
 [RECOVERY.md](RECOVERY.md) for provenance and
 [README.upstream.md](README.upstream.md) for the original documentation.
 
-The recovered GitHub workflows are preserved under `_.github/` so they do not run.
-
 ---
 
 ## Features

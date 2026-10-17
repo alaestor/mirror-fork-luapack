@@ -54,7 +54,7 @@ fn main() -> Result<()> {
     }
 
     let input = if args.bundle {
-        Bundler::bundle(args.file)?
+        Bundler::bundle(args.file, &args.output)?
     } else {
         fs::read_to_string(args.file)?
     };

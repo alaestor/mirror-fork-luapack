@@ -16,7 +16,9 @@ pub struct Bundler {
 }
 
 impl Bundler {
-    pub fn bundle(entry: PathBuf) -> Result<String> {
+    pub fn bundle(entry: PathBuf, output: &Path) -> Result<String> {
+        #[cfg(not(feature = "dynamic"))]
+        let _ = output;
         let mut bundler = Self {
             #[cfg(feature = "dynamic")]
             root: Self::find_root(&entry)?,
@@ -33,6 +35,8 @@ impl Bundler {
         let mut queue = VecDeque::new();
         let parent = canonical.parent().unwrap_or(Path::new(""));
         bundler.process_content(&content, parent, &mut queue)?;
+        #[cfg(feature = "dynamic")]
+        bundler.discover_modules(output, &mut queue)?;
         let entrypoint = std::mem::take(&mut bundler.output);
         bundler.output.push('{');
 
@@ -210,22 +214,33 @@ impl Bundler {
         self.output.push_str(&content[copied..]);
         self.output.push('\n');
 
-        #[cfg(feature = "dynamic")]
-        {
-            let mut dirs_to_scan = VecDeque::new();
-            dirs_to_scan.push_back(parent.to_path_buf());
+        Ok(())
+    }
 
-            while let Some(current_dir) = dirs_to_scan.pop_front() {
-                if let Ok(entries) = fs::read_dir(&current_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_file() && path.extension().map_or(false, |e| e == "lua") {
-                            if let Ok(canonical) = path.canonicalize() {
-                                self.try_queue(canonical, queue)?;
-                            }
-                        } else if path.is_dir() {
-                            dirs_to_scan.push_back(path);
-                        }
+    #[cfg(feature = "dynamic")]
+    fn discover_modules(&mut self, output: &Path, queue: &mut VecDeque<PathBuf>) -> Result<()> {
+        // Only an existing output can be discovered. Canonicalization also excludes
+        // outputs reached through a symlink in their parent path.
+        let output = output.canonicalize().ok();
+        let mut dirs = VecDeque::from([self.root.clone()]);
+        while let Some(dir) = dirs.pop_front() {
+            let mut entries = fs::read_dir(&dir)
+                .with_context(|| format!("Cannot scan {}", dir.display()))?
+                .collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let kind = entry.file_type()?;
+                // Do not follow directory cycles or discover files outside the root.
+                if kind.is_symlink() || entry.file_name() == ".git" {
+                    continue;
+                }
+                let path = entry.path();
+                if kind.is_dir() {
+                    dirs.push_back(path);
+                } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "lua") {
+                    let canonical = path.canonicalize()?;
+                    if output.as_ref() != Some(&canonical) {
+                        self.try_queue(canonical, queue)?;
                     }
                 }
             }

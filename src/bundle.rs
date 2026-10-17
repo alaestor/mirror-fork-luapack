@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use full_moon::ast::{Call, Expression, FunctionArgs, FunctionCall, Prefix, Suffix};
 use full_moon::tokenizer::TokenType;
 use full_moon::visitors::Visitor;
@@ -142,26 +142,25 @@ impl Bundler {
             .unwrap_or_else(|| format!("m{}", self.path_ids.len()))
     }
 
-    fn try_queue(&mut self, canonical: PathBuf, queue: &mut VecDeque<PathBuf>) -> bool {
+    fn try_queue(&mut self, canonical: PathBuf, queue: &mut VecDeque<PathBuf>) -> Result<bool> {
         if self.path_ids.contains_key(&canonical) || self.processed.contains(&canonical) {
-            return self.path_ids.contains_key(&canonical);
+            return Ok(self.path_ids.contains_key(&canonical));
         }
 
-        if let Ok(file_content) = fs::read_to_string(&canonical) {
-            if file_content
-                .lines()
-                .next()
-                .map_or(false, |l| l.starts_with("-- ignore"))
-            {
-                return false;
-            }
-
-            let module_id = self.generate_id(&canonical, &file_content);
-            self.path_ids.insert(canonical.clone(), module_id);
-            queue.push_back(canonical);
-            return true;
+        let file_content = fs::read_to_string(&canonical)
+            .with_context(|| format!("Cannot read local dependency {}", canonical.display()))?;
+        if file_content
+            .lines()
+            .next()
+            .map_or(false, |l| l.starts_with("-- ignore"))
+        {
+            return Ok(false);
         }
-        false
+
+        let module_id = self.generate_id(&canonical, &file_content);
+        self.path_ids.insert(canonical.clone(), module_id);
+        queue.push_back(canonical);
+        Ok(true)
     }
 
     fn process_content(
@@ -185,13 +184,17 @@ impl Bundler {
                     resolved
                 };
 
-                if let Ok(canonical) = resolved_with_ext.canonicalize() {
-                    if self.try_queue(canonical.clone(), queue) {
-                        let module_id = self.path_ids.get(&canonical).unwrap();
-                        self.output.push_str(&content[copied..start]);
-                        self.output.push_str(&format!("\"{}\"", module_id));
-                        copied = end;
-                    }
+                let canonical = resolved_with_ext.canonicalize().with_context(|| {
+                    format!(
+                        "Cannot resolve local dependency {path:?} from {}",
+                        parent.display()
+                    )
+                })?;
+                if self.try_queue(canonical.clone(), queue)? {
+                    let module_id = self.path_ids.get(&canonical).unwrap();
+                    self.output.push_str(&content[copied..start]);
+                    self.output.push_str(&format!("\"{}\"", module_id));
+                    copied = end;
                 }
             }
         }
@@ -209,7 +212,7 @@ impl Bundler {
                         let path = entry.path();
                         if path.is_file() && path.extension().map_or(false, |e| e == "lua") {
                             if let Ok(canonical) = path.canonicalize() {
-                                self.try_queue(canonical, queue);
+                                self.try_queue(canonical, queue)?;
                             }
                         } else if path.is_dir() {
                             dirs_to_scan.push_back(path);

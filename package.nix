@@ -1,10 +1,11 @@
-{ lib, rustPlatform }:
+{ lib, rustPlatform, lua }:
 
 rustPlatform.buildRustPackage {
   pname = "luapack";
   version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
   src = lib.cleanSource ./.;
   cargoLock.lockFile = ./Cargo.lock;
+  nativeCheckInputs = [ lua ];
 
   meta = {
     description = "Lua bundler and minifier";

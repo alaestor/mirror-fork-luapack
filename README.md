@@ -128,12 +128,16 @@ minification preserves semantics for every Lua program.
 ## Testing
 
 ```bash
-cargo test --locked
-cargo test --locked --all-features
+nix develop
+cargo test --locked --no-fail-fast
+cargo test --locked --no-default-features --no-fail-fast
+cargo test --locked --all-features --no-fail-fast
 ```
 
-The recovered crate contains no dedicated test suite. These commands check
-compilation and run any tests Cargo discovers.
+The CLI suite requires `lua` on `PATH`, supplied by the development shell.
+It checks errors and file handling, executes original and generated Lua to
+compare behavior, and exercises the optional Cargo features. Regression tests
+currently fail on recovered upstream bugs, including the LZ4 limitation above.
 
 ---
 

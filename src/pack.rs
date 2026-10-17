@@ -390,3 +390,33 @@ impl VisitorMut for Packer {
         while_block.with_condition(condition).with_block(block)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn generated_names_are_unique_and_not_reserved() {
+        let packer = Packer::new();
+        let mut seen = HashSet::new();
+        for index in 0..20_000 {
+            let name = packer.to_letter(index);
+            assert!(!RESERVED.contains(&name.as_str()), "{name}");
+            assert!(seen.insert(name.clone()), "duplicate at {index}: {name}");
+        }
+    }
+
+    #[test]
+    fn bindings_resolve_in_innermost_scope() {
+        let mut packer = Packer::new();
+        let outer = packer.declare("value");
+        packer.push_scope();
+        let inner = packer.declare("value");
+        assert_ne!(inner, outer);
+        assert_eq!(packer.rename("value"), inner);
+        packer.pop_scope();
+        assert_eq!(packer.rename("value"), outer);
+        assert_eq!(packer.rename("external"), "external");
+    }
+}

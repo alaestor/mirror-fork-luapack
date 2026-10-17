@@ -1,5 +1,7 @@
 use anyhow::Result;
-use regex::Regex;
+use full_moon::ast::{Call, Expression, FunctionArgs, FunctionCall, Prefix, Suffix};
+use full_moon::tokenizer::TokenType;
+use full_moon::visitors::Visitor;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,7 +54,7 @@ impl Bundler {
         bundler.output.clear();
 
         let parent = canonical.parent().unwrap_or(Path::new(""));
-        bundler.process_content(&content, parent, &mut queue);
+        bundler.process_content(&content, parent, &mut queue)?;
         // content and parent are both dropped by this point, thus their names can now be reused in the function namespace
 
         // Also a process_content hack
@@ -89,7 +91,7 @@ impl Bundler {
                 .push_str(&format!("[\"{}\"]=function()", module_id));
 
             let parent = path.parent().unwrap_or(Path::new(""));
-            bundler.process_content(&content, parent, &mut queue);
+            bundler.process_content(&content, parent, &mut queue)?;
 
             bundler.output.push_str("end");
         }
@@ -162,36 +164,39 @@ impl Bundler {
         false
     }
 
-    fn process_content(&mut self, content: &str, parent: &Path, queue: &mut VecDeque<PathBuf>) {
-        let re = Regex::new(r#"require\s*\(?\s*["']([^"']+)["']\)?"#).unwrap();
+    fn process_content(
+        &mut self,
+        content: &str,
+        parent: &Path,
+        queue: &mut VecDeque<PathBuf>,
+    ) -> Result<()> {
+        let ast = full_moon::parse(content)
+            .map_err(|errors| anyhow::anyhow!("Parse error: {errors:?}"))?;
+        let mut requires = StaticRequires::default();
+        requires.visit_ast(&ast);
+        requires.calls.sort_by_key(|(start, _, _)| *start);
+        let mut copied = 0;
+        for (start, end, path) in requires.calls {
+            if path.starts_with('.') {
+                let resolved = parent.join(&path);
+                let resolved_with_ext = if resolved.extension().is_none() {
+                    resolved.with_extension("lua")
+                } else {
+                    resolved
+                };
 
-        for line in content.lines() {
-            if let Some(caps) = re.captures(line) {
-                let path = &caps[1];
-
-                if path.starts_with('.') {
-                    let resolved = parent.join(path);
-                    let resolved_with_ext = if resolved.extension().is_none() {
-                        resolved.with_extension("lua")
-                    } else {
-                        resolved
-                    };
-
-                    if let Ok(canonical) = resolved_with_ext.canonicalize() {
-                        if self.try_queue(canonical.clone(), queue) {
-                            let module_id = self.path_ids.get(&canonical).unwrap();
-                            let replaced = re.replace(line, format!("require(\"{}\")", module_id));
-                            self.output.push_str(&replaced);
-                            self.output.push('\n');
-                            continue;
-                        }
+                if let Ok(canonical) = resolved_with_ext.canonicalize() {
+                    if self.try_queue(canonical.clone(), queue) {
+                        let module_id = self.path_ids.get(&canonical).unwrap();
+                        self.output.push_str(&content[copied..start]);
+                        self.output.push_str(&format!("\"{}\"", module_id));
+                        copied = end;
                     }
                 }
             }
-
-            self.output.push_str(line);
-            self.output.push('\n');
         }
+        self.output.push_str(&content[copied..]);
+        self.output.push('\n');
 
         #[cfg(feature = "dynamic")]
         {
@@ -211,6 +216,43 @@ impl Bundler {
                         }
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct StaticRequires {
+    calls: Vec<(usize, usize, String)>,
+}
+
+impl Visitor for StaticRequires {
+    fn visit_function_call(&mut self, call: &FunctionCall) {
+        if !matches!(call.prefix(), Prefix::Name(name) if name.token().to_string() == "require") {
+            return;
+        }
+        let Some(Suffix::Call(Call::AnonymousCall(arguments))) = call.suffixes().next() else {
+            return;
+        };
+        let string = match arguments {
+            FunctionArgs::String(string) => string,
+            FunctionArgs::Parentheses { arguments, .. } => {
+                let Some(Expression::String(string)) = arguments.iter().next() else {
+                    return;
+                };
+                string
+            }
+            _ => return,
+        };
+        if let TokenType::StringLiteral { literal, .. } = string.token().token_type() {
+            // Escaped names need Lua string decoding, not raw-text path matching.
+            if !literal.contains('\\') {
+                self.calls.push((
+                    string.token().start_position().bytes(),
+                    string.token().end_position().bytes(),
+                    literal.to_string(),
+                ));
             }
         }
     }

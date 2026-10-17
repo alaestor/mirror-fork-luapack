@@ -106,7 +106,9 @@ impl Bundler {
         let mut current = entry
             .canonicalize()?
             .parent()
-            .expect("Cannot find parent folder. Have you ran `git init`?")
+            .ok_or_else(|| {
+                anyhow::anyhow!("Cannot find repository root. Have you run `git init`?")
+            })?
             .to_path_buf();
 
         loop {
@@ -115,10 +117,11 @@ impl Bundler {
                 return Ok(current);
             }
 
-            // I sure do love repeating stupid error messages
             current = current
                 .parent()
-                .expect("Cannot find parent folder. Have you ran `git init`?")
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Cannot find repository root. Have you run `git init`?")
+                })?
                 .to_path_buf();
         }
     }

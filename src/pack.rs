@@ -1,12 +1,14 @@
 use full_moon::ast::*;
+use full_moon::node::Node;
 use full_moon::tokenizer::{Token, TokenReference, TokenType};
-use full_moon::visitors::VisitorMut;
-use std::collections::HashMap;
+use full_moon::visitors::{VisitMut, VisitorMut};
+use std::collections::{HashMap, HashSet};
 
 pub struct Packer {
     counter: usize,
     scopes: Vec<HashMap<String, String>>,
     prev_token: Option<TokenType>,
+    used_names: HashSet<String>,
 }
 
 const RESERVED: [&str; 21] = [
@@ -20,6 +22,7 @@ impl Packer {
             counter: 0,
             scopes: vec![HashMap::new()],
             prev_token: None,
+            used_names: HashSet::new(),
         }
     }
 
@@ -41,8 +44,13 @@ impl Packer {
     }
 
     fn declare(&mut self, name: &str) -> String {
-        let new_name = self.to_letter(self.counter);
-        self.counter += 1;
+        let new_name = loop {
+            let candidate = self.to_letter(self.counter);
+            self.counter += 1;
+            if self.used_names.insert(candidate.clone()) {
+                break candidate;
+            }
+        };
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), new_name.clone());
         }
@@ -50,23 +58,33 @@ impl Packer {
     }
 
     fn to_letter(&self, mut n: usize) -> String {
+        let index = n;
+        // Map the allocation index onto the alphabetic sequence with keywords
+        // removed. Skipping only the current keyword would duplicate its successor.
         loop {
-            let mut result = String::new();
-            let mut num = n + 1;
-
-            while num > 0 {
-                num -= 1;
-                result.push((b'a' + (num % 26) as u8) as char);
-                num /= 26;
+            let skipped = RESERVED
+                .iter()
+                .filter(|word| {
+                    let ordinal = word.bytes().fold(0usize, |value, byte| {
+                        value * 26 + usize::from(byte - b'a') + 1
+                    }) - 1;
+                    ordinal <= n
+                })
+                .count();
+            let adjusted = index + skipped;
+            if adjusted == n {
+                break;
             }
-
-            let name = result.chars().rev().collect::<String>();
-            if !RESERVED.contains(&name.as_str()) {
-                return name;
-            }
-
-            n += 1;
+            n = adjusted;
         }
+        let mut result = String::new();
+        let mut num = n + 1;
+        while num > 0 {
+            num -= 1;
+            result.push((b'a' + (num % 26) as u8) as char);
+            num /= 26;
+        }
+        result.chars().rev().collect()
     }
 
     fn ident(&self, name: &str) -> TokenReference {
@@ -99,6 +117,23 @@ impl Default for Packer {
 }
 
 impl VisitorMut for Packer {
+    fn visit_ast(&mut self, ast: Ast) -> Ast {
+        // Reserve every source identifier before allocating any replacement.
+        // This includes globals used only after the first local declaration.
+        self.used_names
+            .extend(
+                ast.nodes()
+                    .tokens()
+                    .filter_map(|token| match token.token().token_type() {
+                        TokenType::Identifier { identifier } => Some(identifier.to_string()),
+                        _ => None,
+                    }),
+            );
+        let nodes = ast.nodes().clone().visit_mut(self);
+        let eof = self.visit_eof(ast.eof().clone());
+        ast.with_nodes(nodes).with_eof(eof)
+    }
+
     fn visit_token_reference(&mut self, token: TokenReference) -> TokenReference {
         let curr_type = token.token().token_type();
 

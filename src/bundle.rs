@@ -4,11 +4,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(not(feature = "dynamic"))]
-use std::collections::hash_map::DefaultHasher;
-#[cfg(not(feature = "dynamic"))]
-use std::hash::{Hash, Hasher};
-
 pub struct Bundler {
     #[cfg(feature = "dynamic")]
     root: PathBuf,
@@ -135,22 +130,11 @@ impl Bundler {
     }
 
     #[cfg(not(feature = "dynamic"))]
-    fn generate_id(&self, path: &Path, content: &str) -> String {
-        let mut hasher = DefaultHasher::new();
-        content
-            .lines()
-            .take(20)
-            .collect::<Vec<_>>()
-            .join("\n")
-            .hash(&mut hasher);
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .hash(&mut hasher);
-
-        // 16 bits is roughly equal to 65,536 combinations in case anyone was wondering
-        // I'm not sure on how high the risk of collision is considering this is not the full hash size tho
-        format!("m{:04x}", hasher.finish() & 0xFFFF)
+    fn generate_id(&self, path: &Path, _: &str) -> String {
+        self.path_ids
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| format!("m{}", self.path_ids.len()))
     }
 
     fn try_queue(&mut self, canonical: PathBuf, queue: &mut VecDeque<PathBuf>) -> bool {

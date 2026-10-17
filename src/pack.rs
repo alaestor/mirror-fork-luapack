@@ -108,6 +108,32 @@ impl Packer {
             s.chars().next().map_or(false, |c| c.is_alphabetic())
         })
     }
+
+    fn needs_space(previous: &TokenType, current: &TokenType) -> bool {
+        if Self::is_alphanum(previous) && Self::is_alphanum(current) {
+            return true;
+        }
+        match (previous, current) {
+            (TokenType::Symbol { symbol }, TokenType::Number { .. }) => {
+                symbol.to_string().ends_with('.')
+            }
+            (TokenType::Number { .. }, TokenType::Symbol { symbol }) => {
+                symbol.to_string().starts_with('.')
+            }
+            (TokenType::Symbol { symbol }, TokenType::StringLiteral { .. }) => {
+                symbol.to_string() == "["
+            }
+            (TokenType::Symbol { symbol: left }, TokenType::Symbol { symbol: right }) => {
+                // Keep operators and long-bracket delimiters from merging.
+                // This also prevents Lua and CfxLua comment openers.
+                let left = left.to_string();
+                let right = right.to_string();
+                left.ends_with(|c| "-+*/%^<>=~:.&|?[".contains(c))
+                    && right.starts_with(|c| "-+*/%^<>=~:.&|?[".contains(c))
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Default for Packer {
@@ -142,9 +168,7 @@ impl VisitorMut for Packer {
         }
 
         let leading = if let Some(prev) = &self.prev_token {
-            if matches!(curr_type, TokenType::StringLiteral { .. }) {
-                vec![]
-            } else if Self::is_alphanum(prev) && Self::is_alphanum(curr_type) {
+            if Self::needs_space(prev, curr_type) {
                 vec![Token::new(TokenType::Whitespace {
                     characters: " ".into(),
                 })]

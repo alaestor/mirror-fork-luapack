@@ -75,14 +75,25 @@ impl Bundler {
         let modules = std::mem::take(&mut bundler.output);
         let table = bundler.fresh_name("__luapack_modules");
         let native = bundler.fresh_name("__luapack_native_require");
-        let mut loader = format!(
-            "local {native}=require\nlocal {table}\nlocal require\nrequire=function(c)\n\
+        let mut loader = format!("local {native}=require\nlocal {table}\n");
+        #[cfg(feature = "lazy")]
+        let (cache, state) = {
+            let cache = bundler.fresh_name("__luapack_cache");
+            let state = bundler.fresh_name("__luapack_state");
+            loader.push_str(&format!("local {cache},{state}={{}},{{}}\n"));
+            (cache, state)
+        };
+        loader.push_str(&format!(
+            "local require\nrequire=function(c)\n\
              if {table}[c]==nil then return {native}(c) end\n"
-        );
+        ));
         #[cfg(feature = "lazy")]
         loader.push_str(&format!(
-            "if type({table}[c])=='function' then\n\
-             local result={table}[c]()\n{table}[c]=result\nreturn result\nend\nreturn {table}[c]\n"
+            "if {state}[c]==true then return {cache}[c] end\n\
+             if {state}[c]==false then error('circular bundled require: '..c) end\n\
+             {state}[c]=false\nlocal ok,result=pcall({table}[c])\n\
+             if not ok then {state}[c]=nil;error(result,0) end\n\
+             {cache}[c]=result\n{state}[c]=true\nreturn result\n"
         ));
         #[cfg(not(feature = "lazy"))]
         loader.push_str(&format!("return {table}[c]()\n"));

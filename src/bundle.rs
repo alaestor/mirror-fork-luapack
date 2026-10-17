@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use full_moon::ast::{Call, Expression, FunctionArgs, FunctionCall, Prefix, Suffix};
-use full_moon::tokenizer::TokenType;
+use full_moon::tokenizer::{Token, TokenType};
 use full_moon::visitors::Visitor;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -11,6 +11,7 @@ pub struct Bundler {
     root: PathBuf,
     path_ids: HashMap<PathBuf, String>,
     processed: HashSet<PathBuf>,
+    used_names: HashSet<String>,
     pub output: String,
 }
 
@@ -21,45 +22,19 @@ impl Bundler {
             root: Self::find_root(&entry)?,
             path_ids: HashMap::new(),
             processed: HashSet::new(),
+            used_names: HashSet::new(),
             output: String::with_capacity(8192),
         };
 
-        // The packer has an issue with the module name in this function declaration ... for some reason.
-        // I'm just going to replace it with c and call it day. That's because of another bug in the way variables are declared.
-        // The compression improvements aren't big enough for me to fix them so I won't.
-        bundler.output.push_str("require = function(c)\n");
-        #[cfg(feature = "lazy")]
-        {
-            bundler
-                .output
-                .push_str("if type(__M[c]) == 'function' then\n");
-            bundler.output.push_str("local result=__M[c]()\n");
-            bundler.output.push_str("__M[c] = result\n");
-            bundler.output.push_str("return result\n");
-            bundler.output.push_str("end\n");
-            bundler.output.push_str("return __M[c]\n");
-        }
-        #[cfg(not(feature = "lazy"))]
-        bundler.output.push_str("return __M[c]()\n");
-        bundler.output.push_str("end\n");
-        bundler.output.push_str("__M={");
-
         let canonical = entry.canonicalize()?;
         let content = fs::read_to_string(&canonical)?;
-        // I really don't want to modify process_content just for this change soo
         bundler.processed.insert(canonical.clone());
 
         let mut queue = VecDeque::new();
-        let restore = bundler.output.clone();
-        bundler.output.clear();
-
         let parent = canonical.parent().unwrap_or(Path::new(""));
         bundler.process_content(&content, parent, &mut queue)?;
-        // content and parent are both dropped by this point, thus their names can now be reused in the function namespace
-
-        // Also a process_content hack
-        let entrypoint = bundler.output.clone();
-        bundler.output = restore;
+        let entrypoint = std::mem::take(&mut bundler.output);
+        bundler.output.push('{');
 
         let mut first = true;
         while let Some(path) = queue.pop_front() {
@@ -96,11 +71,33 @@ impl Bundler {
             bundler.output.push_str("end");
         }
 
-        // Don't fix what ain't broken
         bundler.output.push_str("}");
-        bundler.output.push_str(&entrypoint);
+        let modules = std::mem::take(&mut bundler.output);
+        let table = bundler.fresh_name("__luapack_modules");
+        let native = bundler.fresh_name("__luapack_native_require");
+        let mut loader = format!(
+            "local {native}=require\nlocal {table}\nlocal require\nrequire=function(c)\n\
+             if {table}[c]==nil then return {native}(c) end\n"
+        );
+        #[cfg(feature = "lazy")]
+        loader.push_str(&format!(
+            "if type({table}[c])=='function' then\n\
+             local result={table}[c]()\n{table}[c]=result\nreturn result\nend\nreturn {table}[c]\n"
+        ));
+        #[cfg(not(feature = "lazy"))]
+        loader.push_str(&format!("return {table}[c]()\n"));
+        loader.push_str(&format!("end\n{table}={modules}\n{entrypoint}"));
+        Ok(loader)
+    }
 
-        Ok(bundler.output)
+    fn fresh_name(&mut self, base: &str) -> String {
+        let mut candidate = base.to_string();
+        let mut suffix = 0;
+        while !self.used_names.insert(candidate.clone()) {
+            suffix += 1;
+            candidate = format!("{base}_{suffix}");
+        }
+        candidate
     }
 
     #[cfg(feature = "dynamic")]
@@ -173,6 +170,7 @@ impl Bundler {
             .map_err(|errors| anyhow::anyhow!("Parse error: {errors:?}"))?;
         let mut requires = StaticRequires::default();
         requires.visit_ast(&ast);
+        self.used_names.extend(requires.identifiers);
         requires.calls.sort_by_key(|(start, _, _)| *start);
         let mut copied = 0;
         for (start, end, path) in requires.calls {
@@ -228,9 +226,14 @@ impl Bundler {
 #[derive(Default)]
 struct StaticRequires {
     calls: Vec<(usize, usize, String)>,
+    identifiers: HashSet<String>,
 }
 
 impl Visitor for StaticRequires {
+    fn visit_identifier(&mut self, token: &Token) {
+        self.identifiers.insert(token.to_string());
+    }
+
     fn visit_function_call(&mut self, call: &FunctionCall) {
         if !matches!(call.prefix(), Prefix::Name(name) if name.token().to_string() == "require") {
             return;

@@ -59,19 +59,20 @@ fn main() -> Result<()> {
         fs::read_to_string(args.file)?
     };
 
-    if args.pack {
+    let mut body = if args.pack {
         let ast = parse(&input).map_err(|e| anyhow::anyhow!("Parse error: {:?}", e))?;
-        output.extend_from_slice(&format!("{}", Packer::new().visit_ast(ast)).as_bytes());
+        format!("{}", Packer::new().visit_ast(ast)).into_bytes()
     } else {
-        output.extend_from_slice(input.as_bytes());
-    }
+        input.into_bytes()
+    };
 
     #[cfg(feature = "lz4")]
     if args.lz4 {
-        output.extend_from_slice(&lz4_flex::compress_prepend_size(&output));
-        return Ok(());
+        body = lz4_flex::compress_prepend_size(&body);
     }
-    
+
+    output.append(&mut body);
+
     if let Some(suffix) = args.suffix {
         output.extend_from_slice(&fs::read(&suffix)?);
     };
